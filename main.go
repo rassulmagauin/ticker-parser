@@ -11,7 +11,6 @@ import (
 	"runtime"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"gopkg.in/yaml.v2"
@@ -64,12 +63,16 @@ func (w *Worker) Run(wg *sync.WaitGroup) {
 					w.outputCh <- PriceMessage{Symbol: symbol, Price: price, Changed: true}
 				}
 				w.lastPrices[symbol] = price
-
-				atomic.AddInt64(&w.requestCount, 1)
+				// тут можно было бы использовать atomic.AddInt64, но так как только одна горутина меняет это, то можно и так
+				w.requestCount++
 			}
 			time.Sleep(1 * time.Second)
 		}
 	}
+}
+
+func (w *Worker) GetRequestCount() int {
+	return int(w.requestCount)
 }
 
 func readConfig(path string) (*Config, error) {
@@ -152,6 +155,7 @@ func main() {
 	extraSymbols := len(config.Symbols) % config.MaxWorkers
 
 	startIndex := 0
+	// Каждому воркеру даем часть символов
 	for i := 0; i < config.MaxWorkers; i++ {
 		endIndex := startIndex + symbolsPerWorker
 		if i < extraSymbols {
@@ -174,9 +178,11 @@ func main() {
 		go worker.Run(&wg)
 	}
 
+	var wg2 sync.WaitGroup
 	// это чтобы читать сообщения из канала и выводить их в консоль
-	// я решил не дожидаться завершение этой горутины при остановке программы.
+	wg2.Add(1)
 	go func() {
+		defer wg2.Done()
 		for msg := range outputCh {
 			if msg.Changed {
 				fmt.Printf("%s price:%.2f changed\n", msg.Symbol, msg.Price)
@@ -188,9 +194,9 @@ func main() {
 
 	go func() {
 		for range time.Tick(5 * time.Second) {
-			var totalRequests int64
+			var totalRequests int
 			for _, w := range workers {
-				totalRequests += atomic.LoadInt64(&w.requestCount)
+				totalRequests += w.GetRequestCount()
 			}
 			fmt.Printf("workers requests total: %d\n", totalRequests)
 		}
@@ -199,11 +205,13 @@ func main() {
 	for {
 		cmd, _ := scanner.ReadString('\n')
 		if strings.TrimSpace(cmd) == "STOP" {
+			// даем команду "остановить" всем воркерам
 			for _, w := range workers {
 				close(w.stopCh)
 			}
-			wg.Wait()
+			wg.Wait() // ждем воркеров
 			close(outputCh)
+			wg2.Wait() // ждем пока все сообщения выведутся
 			break
 		}
 	}
