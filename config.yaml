@@ -1,0 +1,9 @@
+symbols:
+ - "LTCBTC"
+ - "BTCUSDT"
+ - "EOSUSDT"
+ - "ETHUSDT"
+ - "XRPUSDT"
+ - "BNBUSDT"
+ - "TRXUSDT"
+max_workers: 20
