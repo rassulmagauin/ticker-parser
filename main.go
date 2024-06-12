@@ -31,7 +31,6 @@ type Worker struct {
 	symbols      []string
 	lastPrices   map[string]float64
 	requestCount int64
-	stopCh       chan struct{}
 	outputCh     chan PriceMessage
 }
 
@@ -40,12 +39,12 @@ type TickerResponse struct {
 	Price  string `json:"price"`
 }
 
-func (w *Worker) Run(wg *sync.WaitGroup) {
+func (w *Worker) Run(wg *sync.WaitGroup, stopCh chan struct{}) {
 	defer wg.Done()
 	w.lastPrices = make(map[string]float64)
 	for {
 		select {
-		case <-w.stopCh:
+		case <-stopCh:
 			return
 		default:
 			for _, symbol := range w.symbols {
@@ -71,7 +70,7 @@ func (w *Worker) Run(wg *sync.WaitGroup) {
 	}
 }
 
-func (w *Worker) GetRequestCount() int {
+func (w *Worker) GetRequestsCount() int {
 	return int(w.requestCount)
 }
 
@@ -149,6 +148,7 @@ func main() {
 	}
 	// так как синхронизация не требуется, то можно использовать буферизированный канал
 	outputCh := make(chan PriceMessage, 100)
+	stopCh := make(chan struct{})
 	var wg sync.WaitGroup
 	var workers []*Worker
 	symbolsPerWorker := len(config.Symbols) / config.MaxWorkers
@@ -168,14 +168,13 @@ func main() {
 
 		worker := &Worker{
 			symbols:  config.Symbols[startIndex:endIndex],
-			stopCh:   make(chan struct{}),
 			outputCh: outputCh,
 		}
 		workers = append(workers, worker)
 		startIndex = endIndex
 
 		wg.Add(1)
-		go worker.Run(&wg)
+		go worker.Run(&wg, stopCh)
 	}
 
 	var wg2 sync.WaitGroup
@@ -200,7 +199,7 @@ func main() {
 		for range time.Tick(5 * time.Second) {
 			var totalRequests int
 			for _, w := range workers {
-				totalRequests += w.GetRequestCount()
+				totalRequests += w.GetRequestsCount()
 			}
 			fmt.Printf("\nworkers requests total: %d\n\nclear", totalRequests)
 		}
@@ -210,9 +209,7 @@ func main() {
 		cmd, _ := scanner.ReadString('\n')
 		if strings.TrimSpace(cmd) == "STOP" {
 			// даем команду "остановить" всем воркерам
-			for _, w := range workers {
-				close(w.stopCh)
-			}
+			close(stopCh)
 			wg.Wait() // ждем воркеров
 			close(outputCh)
 			wg2.Wait() // ждем пока все сообщения выведутся
