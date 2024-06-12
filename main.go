@@ -29,29 +29,29 @@ type PriceMessage struct {
 
 type Worker struct {
 	symbols      []string
-	lastPrices   map[string]float64
-	requestCount int64
+	lastPrices   map[string]float64 // я бы вынес логику отслеживания исзменений отсюда на слой выше и централизованно следил бы, а воркер сделал бы максимально простым
+	requestCount int64              // надо закрывать атомиком или мьютексом, потому что ты обращаешься к этой переменной из разных горутин (еще в маин читаешь)
 	outputCh     chan PriceMessage
 }
 
 type TickerResponse struct {
 	Symbol string `json:"symbol"`
-	Price  string `json:"price"`
+	Price  string `json:"price"` // можно использовать json.Number  и не писать кастомный парсер из строки в число
 }
 
 func (w *Worker) Run(wg *sync.WaitGroup, stopCh chan struct{}) {
 	defer wg.Done()
-	w.lastPrices = make(map[string]float64)
+	w.lastPrices = make(map[string]float64) // лучше выносить такое в консруктор, если случайно вызовем run несколько раз, будут проблемы
 	for {
 		select {
 		case <-stopCh:
 			return
 		default:
-			for _, symbol := range w.symbols {
+			for _, symbol := range w.symbols { // думаю лучше ставить селект внутри этого цикла - в твоем случае, когда мы отправим стоп сигнал, придется ждать когда все символы из списка отработают
 				price, err := fetchPrice(symbol)
 				if err != nil {
 					log.Println(err)
-					continue
+					continue // забыл увеличить счетчик запросов
 				}
 				previousPrice, exists := w.lastPrices[symbol]
 
@@ -77,7 +77,7 @@ func (w *Worker) GetRequestsCount() int {
 func readConfig(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, err
+		return nil, err // хорошая практика использовать errors.Wrap
 	}
 	var config Config
 	err = yaml.Unmarshal(data, &config)
@@ -89,7 +89,7 @@ func readConfig(path string) (*Config, error) {
 
 func fetchPrice(symbol string) (float64, error) {
 	url := fmt.Sprintf("https://api.binance.com/api/v3/ticker/price?symbol=%s", symbol)
-	response, err := http.Get(url)
+	response, err := http.Get(url) // лучше не использовать DefaultClient - у него нет таймаута, если что-то пойдет не так, зависнешь навсегда тут
 	if err != nil {
 		return 0, fmt.Errorf("error making request to Binance API: %v", err)
 	}
@@ -117,6 +117,7 @@ func fetchPrice(symbol string) (float64, error) {
 	return price, nil
 }
 
+// parsePrice - слишком кастомное название, мы же можем парсить любые строки (не только цену) - я бы назвал strToFloat64 и смог переиспользовать в любых похожих кейсах
 func parsePrice(priceStr string) (float64, error) {
 	var price float64
 	if _, err := fmt.Sscanf(priceStr, "%f", &price); err != nil {
@@ -130,7 +131,7 @@ func main() {
 	fmt.Print("Enter command (START to begin, STOP to end): ")
 	cmd, _ := scanner.ReadString('\n')
 	cmd = strings.TrimSpace(cmd)
-	if cmd != "START" {
+	if cmd != "START" { // YAGNY - в задаче не было такого требования
 		log.Println("Command to start not received, exiting...")
 		return
 	}
@@ -139,7 +140,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to read config: %v", err)
 	}
-	if config.MaxWorkers <= 0 {
+	if config.MaxWorkers <= 0 { // я бы вынес эту проверку выше - зачем заствлять пользователя что-то вводить, а потом писать ошибку, что у него конфига не валидна (вообще лучше использовать пакет validator и валидировать сразу конфигу)
 		log.Fatalf("Invalid max_workers value: %d", config.MaxWorkers)
 	}
 	coreCount := runtime.NumCPU()
@@ -156,7 +157,7 @@ func main() {
 
 	startIndex := 0
 	// Каждому воркеру даем часть символов
-	for i := 0; i < config.MaxWorkers; i++ {
+	for i := 0; i < config.MaxWorkers; i++ { // я бы вынес разбивку символов на группы и потом уже создавал для них воркеры (так ты как минимум сможешь отдельно протестировать группировку)
 		endIndex := startIndex + symbolsPerWorker
 		if i < extraSymbols {
 			endIndex++
@@ -174,18 +175,18 @@ func main() {
 		startIndex = endIndex
 
 		wg.Add(1)
-		go worker.Run(&wg, stopCh)
+		go worker.Run(&wg, stopCh) // в общем я бы разделил логику создания и подготовки и логику запуска воркеров - это было бы читабельнее
 	}
 
-	var wg2 sync.WaitGroup
+	var wg2 sync.WaitGroup // не вижу смысла 2 разных wg делать - можно переиспользовать одну, ты же ждешь 1 раз в маин
 	// это чтобы читать сообщения из канала и выводить их в консоль
 	wg2.Add(1)
 	go func() {
 		defer wg2.Done()
 		i := 1
 		for msg := range outputCh {
-			time.Sleep(100 * time.Millisecond)
-			fmt.Printf("Message %d\n", i)
+			time.Sleep(100 * time.Millisecond) // не понял зачем тут ожидание
+			fmt.Printf("Message %d\n", i)      // YAGNY
 			i++
 			if msg.Changed {
 				fmt.Printf("%s price:%.2f changed\n", msg.Symbol, msg.Price)
@@ -205,12 +206,12 @@ func main() {
 		}
 	}()
 
-	for {
-		cmd, _ := scanner.ReadString('\n')
+	for { // я бы все же wg.Wait() вынес из цикла  - а работу с инпутом запустил бы в горутине
+		cmd, _ := scanner.ReadString('\n') // ошибки лучше всегда обрабатывать
 		if strings.TrimSpace(cmd) == "STOP" {
 			// даем команду "остановить" всем воркерам
-			close(stopCh)
-			wg.Wait() // ждем воркеров
+			close(stopCh) // так норм, но еще лучше использовать контекст с отменой
+			wg.Wait()     // ждем воркеров
 			close(outputCh)
 			wg2.Wait() // ждем пока все сообщения выведутся
 			break
