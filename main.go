@@ -66,7 +66,7 @@ func (w *Worker) Run(wg *sync.WaitGroup) {
 				// тут можно было бы использовать atomic.AddInt64, но так как только одна горутина меняет это, то можно и так
 				w.requestCount++
 			}
-			time.Sleep(1 * time.Second)
+
 		}
 	}
 }
