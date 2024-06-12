@@ -147,8 +147,8 @@ func main() {
 	if config.MaxWorkers > coreCount {
 		config.MaxWorkers = coreCount
 	}
-
-	outputCh := make(chan PriceMessage)
+	// так как синхронизация не требуется, то можно использовать буферизированный канал
+	outputCh := make(chan PriceMessage, 100)
 	var wg sync.WaitGroup
 	var workers []*Worker
 	symbolsPerWorker := len(config.Symbols) / config.MaxWorkers
@@ -183,7 +183,11 @@ func main() {
 	wg2.Add(1)
 	go func() {
 		defer wg2.Done()
+		i := 1
 		for msg := range outputCh {
+			time.Sleep(100 * time.Millisecond)
+			fmt.Printf("Message %d\n", i)
+			i++
 			if msg.Changed {
 				fmt.Printf("%s price:%.2f changed\n", msg.Symbol, msg.Price)
 			} else {
@@ -198,7 +202,7 @@ func main() {
 			for _, w := range workers {
 				totalRequests += w.GetRequestCount()
 			}
-			fmt.Printf("workers requests total: %d\n", totalRequests)
+			fmt.Printf("\nworkers requests total: %d\n\nclear", totalRequests)
 		}
 	}()
 
